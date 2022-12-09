@@ -32,8 +32,16 @@ class Solution:
             Homography from source to destination, 3x3 numpy array.
         """
         # return homography
-        """INSERT YOUR CODE HERE"""
-        pass
+        A = []
+        for src, dst in zip(match_p_src.T, match_p_dst.T):
+            A.append([-src[0], -src[1], -1, 0, 0, 0, src[0] * dst[0], src[1] * dst[0], dst[0]])
+            A.append([0, 0, 0, -src[0], -src[1], -1, src[0] * dst[1], src[1] * dst[1], dst[1]])
+
+        A = np.asarray(A)
+        _, _, vh = np.linalg.svd(A, full_matrices=True)
+        H = (vh.T.conj()[:, 8]).reshape(3, 3)
+
+        return H
 
     @staticmethod
     def compute_forward_homography_slow(
@@ -59,8 +67,20 @@ class Solution:
             The forward homography of the source image to its destination.
         """
         # return new_image
-        """INSERT YOUR CODE HERE"""
-        pass
+        h1 = homography[0, :]
+        h2 = homography[1, :]
+        h3 = homography[2, :]
+        forward_map = np.zeros((dst_image_shape[0], dst_image_shape[1], 3), dtype=int)
+
+        for y_src in range(src_image.shape[0]):
+            for x_src in range(src_image.shape[1]):
+                vec = [x_src, y_src, 1]
+                x_target = int(np.dot(h1, vec) / np.dot(h3, vec))
+                y_target = int(np.dot(h2, vec) / np.dot(h3, vec))
+                if 0 <= y_target < dst_image_shape[0] and 0 <= x_target < dst_image_shape[1]:
+                    forward_map[y_target, x_target, :] = src_image[y_src, x_src, :]
+
+        return forward_map
 
     @staticmethod
     def compute_forward_homography_fast(
@@ -90,8 +110,28 @@ class Solution:
             The forward homography of the source image to its destination.
         """
         # return new_image
-        """INSERT YOUR CODE HERE"""
-        pass
+        Y, X = np.mgrid[:src_image.shape[0], :src_image.shape[1]]
+
+        forward_map = np.zeros((3, src_image.shape[1], src_image.shape[0]), dtype=int)
+        forward_map[0, :, :] = X.T
+        forward_map[1, :, :] = Y.T
+        forward_map[2, :, :] = np.ones((src_image.shape[1], src_image.shape[0]))
+
+        temp = np.tensordot(homography, forward_map, axes=(1, 0))
+        dst_img_coordinates = np.round(np.divide(temp[0:2, :, :], temp[2, :, :]))
+
+        INVALID_COORDINATES_VALUE = -1
+        dst_img_coordinates[0, :, :][dst_img_coordinates[0, :, :] >= dst_image_shape[1]] = INVALID_COORDINATES_VALUE
+        dst_img_coordinates[0, :, :][dst_img_coordinates[0, :, :] < 0] = INVALID_COORDINATES_VALUE
+        dst_img_coordinates[1, :, :][dst_img_coordinates[1, :, :] >= dst_image_shape[0]] = INVALID_COORDINATES_VALUE
+        dst_img_coordinates[1, :, :][dst_img_coordinates[1, :, :] < 0] = INVALID_COORDINATES_VALUE
+        src_valid_idx = np.where(dst_img_coordinates != INVALID_COORDINATES_VALUE)
+        dst_idx = dst_img_coordinates[:, src_valid_idx[1], src_valid_idx[2]]
+
+        forward_map = np.zeros(dst_image_shape, dtype=int)
+        forward_map[dst_idx[1].astype(int), dst_idx[0].astype(int)] = src_image[src_valid_idx[2], src_valid_idx[1]]
+
+        return forward_map
 
     @staticmethod
     def test_homography(homography: np.ndarray,
