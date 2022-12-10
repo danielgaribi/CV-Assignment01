@@ -158,9 +158,17 @@ class Solution:
             inliers). In edge case where the number of inliers is zero,
             return dist_mse = 10 ** 9.
         """
-        # return fit_percent, dist_mse
-        """INSERT YOUR CODE HERE"""
-        pass
+
+        num_points = len(match_p_src[0])
+
+        homogen_src_points = np.asarray([match_p_src[0], match_p_src[1], [1] * num_points])  # add third coordinate
+        trans_src_p = homography @ homogen_src_points                                       # transform using homography
+        trans_src_p = np.divide(trans_src_p[0:2, :], trans_src_p[2])                        # normalize by 3rd coord.
+        distances = np.linalg.norm(match_p_dst - trans_src_p, axis=0)                       # calculate distances
+        good_dist = distances[distances < max_err]
+        num_good_points = len(good_dist)
+        fit_percent, dist_mse = num_good_points / num_points, np.mean(good_dist) if num_good_points else 10 ** 9
+        return fit_percent, dist_mse
 
     @staticmethod
     def meet_the_model_points(homography: np.ndarray,
@@ -188,8 +196,15 @@ class Solution:
             image (shape 2xD; D as above).
         """
         # return mp_src_meets_model, mp_dst_meets_model
-        """INSERT YOUR CODE HERE"""
-        pass
+
+        num_points = len(match_p_src[0])
+
+        homogen_src_points = np.asarray([match_p_src[0], match_p_src[1], [1] * num_points])  # add third coordinate
+        trans_src_p = homography @ homogen_src_points                                       # transform using homography
+        trans_src_p = np.divide(trans_src_p[0:2, :], trans_src_p[2])                        # normalize by 3rd coord.
+        distances = np.linalg.norm(match_p_dst - trans_src_p, axis=0)                       # calculate distances
+        good_points = distances < max_err
+        return match_p_src[:, good_points], match_p_dst[:, good_points]
 
     def compute_homography(self,
                            match_p_src: np.ndarray,
@@ -210,20 +225,29 @@ class Solution:
             homography: Projective transformation matrix from src to dst.
         """
         # # use class notations:
-        # w = inliers_percent
-        # # t = max_err
-        # # p = parameter determining the probability of the algorithm to
-        # # succeed
-        # p = 0.99
-        # # the minimal probability of points which meets with the model
-        # d = 0.5
-        # # number of points sufficient to compute the model
-        # n = 4
-        # # number of RANSAC iterations (+1 to avoid the case where w=1)
-        # k = int(np.ceil(np.log(1 - p) / np.log(1 - w ** n))) + 1
-        # return homography
-        """INSERT YOUR CODE HERE"""
-        pass
+        w = inliers_percent
+        t = max_err
+        p = 0.99  # parameter determining the probability of the algorithm to succeed
+        d = 0.5  # the minimal probability of points which meets with the model
+        n = 4  # number of points sufficient to compute the model
+        # number of RANSAC iterations (+1 to avoid the case where w=1)
+        k = int(np.ceil(np.log(1 - p) / np.log(1 - w ** n))) + 1
+
+        num_points = len(match_p_dst[0])
+        homography = None
+        cur_err = 10 ** 9
+        for i in range(k):
+            rand_p_indx = np.random.randint(0, num_points, size=4)
+            temp_homography = self.compute_homography_naive(match_p_src[:, rand_p_indx], match_p_dst[:, rand_p_indx])
+            src_meet_points, dst_meet_points = self.meet_the_model_points(temp_homography, match_p_src, match_p_dst, t)
+            num_meet_points = src_meet_points.shape[1]
+            if num_meet_points / num_points > d:
+                new_homography = self.compute_homography_naive(src_meet_points, dst_meet_points)
+                _, dist_mse = self.test_homography(new_homography, match_p_src, match_p_dst, t)
+                if dist_mse < cur_err:
+                    homography = new_homography
+
+        return homography
 
     @staticmethod
     def compute_backward_mapping(
@@ -251,9 +275,53 @@ class Solution:
             The source image backward warped to the destination coordinates.
         """
 
-        # return backward_warp
-        """INSERT YOUR CODE HERE"""
-        pass
+        # creating destination image coordinates
+        x, y = np.arange(dst_image_shape[0]), np.arange(dst_image_shape[1])
+        dst_img_size = dst_image_shape[0] * dst_image_shape[1]
+        dst_x_coord, dst_y_coord = np.meshgrid(x, y)
+        dst_coord_matrix = np.stack([dst_x_coord.T, dst_y_coord.T], axis=2)  # trans. because image coord.are opposite
+        dst_points = np.reshape(dst_coord_matrix, (dst_img_size, 2)).T
+
+        # compute the corresponding points in the source image:
+        homogen_dst_points = np.asarray([dst_points[0], dst_points[1], [1] * dst_img_size])
+        matching_source_points = backward_projective_homography @ homogen_dst_points
+        matching_source_points = np.divide(matching_source_points[0:2, :], matching_source_points[2])
+
+        # filtering out illegal coord:
+        source_x, source_y = src_image.shape[0], src_image.shape[1]
+        correct_x = np.logical_and(0 < matching_source_points[0], matching_source_points[0] < source_x)
+        correct_y = np.logical_and(0 < matching_source_points[1], matching_source_points[1] < source_y)
+        good_matching_points_loc = np.logical_and(correct_x, correct_y)
+        good_matched_src_p = matching_source_points.T[good_matching_points_loc].T
+        matched_dst_p = dst_points.T[good_matching_points_loc].T
+
+        #########################
+        # compute bi-cubic interpolation on good_matched_source_p
+        #########################
+
+        # First we create the coordinates of source image
+        x, y = np.arange(source_x), np.arange(source_y)
+        src_img_size = src_image.shape[0] * src_image.shape[1]
+        x_src_coord, y_src_coord = np.meshgrid(x, y)
+        src_coord_matrix = np.stack([x_src_coord.T, y_src_coord.T], axis=2)  # trans. because image coord.are opposite
+        src_points = np.reshape(src_coord_matrix, (src_img_size, 2)).T
+
+        # Now we can interpolate each RGB
+        R_scr_value = src_image[src_points[0], src_points[1]][:, 0]
+        G_scr_value = src_image[src_points[0], src_points[1]][:, 1]
+        B_scr_value = src_image[src_points[0], src_points[1]][:, 2]
+
+        dst_bi_inter_R_val = griddata(src_points.T, R_scr_value, good_matched_src_p.T, method="nearest", fill_value=0)
+        dst_bi_inter_G_val = griddata(src_points.T, G_scr_value, good_matched_src_p.T, method="nearest", fill_value=0)
+        dst_bi_inter_B_val = griddata(src_points.T, B_scr_value, good_matched_src_p.T, method="nearest", fill_value=0)
+
+        # Now we create black dst_image and plant into it the matched interpolated points:
+        new_dst_img = np.zeros(dst_image_shape)
+        rgb = np.stack([dst_bi_inter_R_val, dst_bi_inter_G_val, dst_bi_inter_B_val], axis=0).T
+        new_dst_img[matched_dst_p[0], matched_dst_p[1]] = rgb
+
+        return new_dst_img
+
 
     @staticmethod
     def find_panorama_shape(src_image: np.ndarray,
@@ -388,4 +456,20 @@ class Solution:
         """
         # return np.clip(img_panorama, 0, 255).astype(np.uint8)
         """INSERT YOUR CODE HERE"""
+
+        """
+        It took me some time to understand this, so I writing this down for latter use (Now Iam 99.9% sure):
+        
+        1. You create a forward homography.
+        2. Using it you use the given function to calculate the panorama size, as well as "the position of the
+            destination image in the panorama". This positioning is described in the pad structure (returned by the
+            same function)
+        3. Now we calculate the backward homography and add to it the appropriate translation.
+        4. We create a black image of the size of the panorama.
+        5. We use the compute_backward_panorama function with the source_img, the destination image which will be
+           the (currently black) panorama image and the backward homography with translation. This will plant the
+           source image into the panorama (to its correct location).
+        6. Now we just put the destination image into the panorama (its position is calculated in section 2), but
+           only in the places where the panorama is still black!! 
+        """
         pass
