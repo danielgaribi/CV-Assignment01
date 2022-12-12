@@ -275,50 +275,24 @@ class Solution:
             The source image backward warped to the destination coordinates.
         """
 
-        # creating destination image coordinates
-        x, y = np.arange(dst_image_shape[0]), np.arange(dst_image_shape[1])
-        dst_img_size = dst_image_shape[0] * dst_image_shape[1]
-        dst_x_coord, dst_y_coord = np.meshgrid(x, y)
-        dst_coord_matrix = np.stack([dst_x_coord.T, dst_y_coord.T], axis=2)  # trans. because image coord.are opposite
-        dst_points = np.reshape(dst_coord_matrix, (dst_img_size, 2)).T
+        # (1) Create a mesh-grid of columns and rows of the destination image.
+        Y, X = np.mgrid[:dst_image_shape[0], :dst_image_shape[1]]
 
-        # compute the corresponding points in the source image:
-        homogen_dst_points = np.asarray([dst_points[0], dst_points[1], [1] * dst_img_size])
-        matching_source_points = backward_projective_homography @ homogen_dst_points
-        matching_source_points = np.divide(matching_source_points[0:2, :], matching_source_points[2])
+        # (2) Create a set of homogenous coordinates for the destination image using the mesh-grid from (1).
+        dst_coord_matrix = np.stack([X.T, Y.T, np.ones_like(X.T)])  # trans. because image coord.are opposite
 
-        # filtering out illegal coord:
-        source_x, source_y = src_image.shape[0], src_image.shape[1]
-        correct_x = np.logical_and(0 < matching_source_points[0], matching_source_points[0] < source_x)
-        correct_y = np.logical_and(0 < matching_source_points[1], matching_source_points[1] < source_y)
-        good_matching_points_loc = np.logical_and(correct_x, correct_y)
-        good_matched_src_p = matching_source_points.T[good_matching_points_loc].T
-        matched_dst_p = dst_points.T[good_matching_points_loc].T
+        # (3) Compute the corresponding coordinates in the source image using the backward projective homography.
+        matching_source_points = np.tensordot(backward_projective_homography, dst_coord_matrix, axes=(1, 0))
+        matching_source_points = np.divide(matching_source_points[0:2, :, :], matching_source_points[2, :, :]).T
 
-        #########################
-        # compute bi-cubic interpolation on good_matched_source_p
-        #########################
+        # (4) Create the mesh-grid of source image coordinates.
+        Y, X = np.mgrid[:src_image.shape[0], :src_image.shape[1]]
 
-        # First we create the coordinates of source image
-        x, y = np.arange(source_x), np.arange(source_y)
-        src_img_size = src_image.shape[0] * src_image.shape[1]
-        x_src_coord, y_src_coord = np.meshgrid(x, y)
-        src_coord_matrix = np.stack([x_src_coord.T, y_src_coord.T], axis=2)  # trans. because image coord.are opposite
-        src_points = np.reshape(src_coord_matrix, (src_img_size, 2)).T
+        # (5) For each color channel (RGB): Use scipy's interpolation.griddata with an appropriate configuration to compute the bi-cubic interpolation of the projected coordinates.
+        new_dst_img = griddata((Y.flatten(), X.flatten()), src_image[Y.flatten(), X.flatten()],
+                         (matching_source_points[:, :, 1], matching_source_points[:, :, 0]), method='linear')
 
-        # Now we can interpolate each RGB
-        R_scr_value = src_image[src_points[0], src_points[1]][:, 0]
-        G_scr_value = src_image[src_points[0], src_points[1]][:, 1]
-        B_scr_value = src_image[src_points[0], src_points[1]][:, 2]
-
-        dst_bi_inter_R_val = griddata(src_points.T, R_scr_value, good_matched_src_p.T, method="nearest", fill_value=0)
-        dst_bi_inter_G_val = griddata(src_points.T, G_scr_value, good_matched_src_p.T, method="nearest", fill_value=0)
-        dst_bi_inter_B_val = griddata(src_points.T, B_scr_value, good_matched_src_p.T, method="nearest", fill_value=0)
-
-        # Now we create black dst_image and plant into it the matched interpolated points:
-        new_dst_img = np.zeros(dst_image_shape)
-        rgb = np.stack([dst_bi_inter_R_val, dst_bi_inter_G_val, dst_bi_inter_B_val], axis=0).T
-        new_dst_img[matched_dst_p[0], matched_dst_p[1]] = rgb
+        new_dst_img = np.nan_to_num(new_dst_img) / 255
 
         return new_dst_img
 
