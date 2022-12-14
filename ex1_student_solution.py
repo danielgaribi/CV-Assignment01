@@ -292,7 +292,7 @@ class Solution:
         new_dst_img = griddata((Y.flatten(), X.flatten()), src_image[Y.flatten(), X.flatten()],
                          (matching_source_points[:, :, 1], matching_source_points[:, :, 0]), method='linear')
 
-        new_dst_img = np.nan_to_num(new_dst_img) / 255
+        new_dst_img = np.nan_to_num(new_dst_img)
 
         return new_dst_img
 
@@ -387,7 +387,18 @@ class Solution:
         """
         # return final_homography
         """INSERT YOUR CODE HERE"""
-        pass
+        # (1) Build the translation matrix from the pads.
+        T = np.identity(3)
+        T[0,2] = -pad_left
+        T[1,2] = -pad_up
+
+        # (2) Compose the backward homography and the translation matrix together.
+        H = backward_homography @ T
+
+        # (3) Scale the homography as learnt in class.
+        H = H / np.linalg.norm(H)
+
+        return H
 
     def panorama(self,
                  src_image: np.ndarray,
@@ -431,6 +442,28 @@ class Solution:
         # return np.clip(img_panorama, 0, 255).astype(np.uint8)
         """INSERT YOUR CODE HERE"""
 
+        # (1) Compute the forward homography and the panorama shape.
+        forward_homography = self.compute_homography(match_p_src, match_p_dst, inliers_percent, max_err)
+
+        # (2) Compute the backward homography.
+        backward_homography = self.compute_homography(match_p_dst, match_p_src, inliers_percent, max_err)
+
+        # (3) Add the appropriate translation to the homography so that the source image will plant in place.
+        panorama_rows_num, panorama_cols_num, padStruct = self.find_panorama_shape(src_image, dst_image, forward_homography)
+        panorama_shape = (panorama_rows_num, panorama_cols_num, 3)
+        translated_backward_homography =  self.add_translation_to_backward_homography(backward_homography, padStruct.pad_left, padStruct.pad_up)
+
+        # (4) Compute the backward warping with the appropriate translation.
+        backward_warp = self.compute_backward_mapping(translated_backward_homography, src_image, panorama_shape)
+
+        # (5) Create the an empty panorama image and plant there the destination image.
+        panorama_image = np.zeros(panorama_shape)
+        panorama_image[padStruct.pad_up:padStruct.pad_up+dst_image.shape[0], padStruct.pad_left:padStruct.pad_left+dst_image.shape[1], :] = dst_image[:, :, :]
+
+        # (6) place the backward warped image in the indices where the panorama image is zero.
+        none_dst_image_pixels = np.ones_like(panorama_image, dtype=bool)
+        none_dst_image_pixels[padStruct.pad_up:padStruct.pad_up+dst_image.shape[0], padStruct.pad_left:padStruct.pad_left+dst_image.shape[1], :] = False
+        panorama_image[none_dst_image_pixels] = backward_warp[none_dst_image_pixels]
         """
         It took me some time to understand this, so I writing this down for latter use (Now Iam 99.9% sure):
         
@@ -446,4 +479,4 @@ class Solution:
         6. Now we just put the destination image into the panorama (its position is calculated in section 2), but
            only in the places where the panorama is still black!! 
         """
-        pass
+        return panorama_image / 255
